@@ -11,9 +11,16 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 
 DEFAULT_MODEL = "mlx-community/ivrit-ai-whisper-large-v3-mlx"
+OutputFormat = Literal["txt", "srt", "json"]
+FORMAT_NAMES: dict[str, OutputFormat] = {
+    "txt": "txt",
+    "srt": "srt",
+    "json": "json",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,6 +183,21 @@ def write_json(
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def parse_formats(value: str) -> frozenset[OutputFormat]:
+    names = {part.strip() for part in value.split(",") if part.strip()}
+    if not names:
+        raise argparse.ArgumentTypeError("at least one output format is required")
+    unknown = names - FORMAT_NAMES.keys()
+    if unknown:
+        formatted = ", ".join(sorted(unknown))
+        raise argparse.ArgumentTypeError(f"unknown output format(s): {formatted}")
+    return frozenset(FORMAT_NAMES[name] for name in names)
+
+
+def output_path(prefix: Path, suffix: str) -> Path:
+    return prefix.parent / f"{prefix.name}{suffix}"
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="stt",
@@ -191,7 +213,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--no-diarize", action="store_true", help="Skip diarization")
     p.add_argument("--no-transcribe", action="store_true", help="Skip transcription (diarization only)")
     p.add_argument(
-        "--formats", default="txt,srt,json",
+        "--formats",
+        type=parse_formats,
+        default=parse_formats("txt,srt,json"),
         help="Comma-separated output formats: txt,srt,json (default: all three)",
     )
     return p.parse_args(argv)
@@ -210,7 +234,6 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     out_prefix = args.output_prefix if args.output_prefix else audio_in.with_suffix("")
-    formats = {f.strip() for f in args.formats.split(",") if f.strip()}
 
     with tempfile.TemporaryDirectory() as td:
         wav = Path(td) / "audio_16k.wav"
@@ -229,6 +252,19 @@ def main(argv: list[str] | None = None) -> int:
             turns = diarize(wav)
             print(f"  {len(turns)} speaker turns", file=sys.stderr, flush=True)
 
+    if args.no_transcribe:
+        rttm_path = output_path(out_prefix, ".rttm")
+        with rttm_path.open("w", encoding="utf-8") as f:
+            audio_id = audio_in.stem
+            for turn in turns:
+                f.write(
+                    f"SPEAKER {audio_id} 1 {turn.start:.3f} "
+                    f"{turn.end - turn.start:.3f} <NA> <NA> "
+                    f"{turn.speaker} <NA> <NA>\n"
+                )
+        print(f"Wrote {rttm_path}", file=sys.stderr)
+        return 0
+
     if turns:
         attributed_segments = assign_speakers(segments, turns)
     else:
@@ -242,29 +278,16 @@ def main(argv: list[str] | None = None) -> int:
             for segment in segments
         ]
 
-    if not segments:
-        rttm_path = out_prefix.with_suffix(".rttm")
-        with rttm_path.open("w", encoding="utf-8") as f:
-            audio_id = audio_in.stem
-            for turn in turns:
-                f.write(
-                    f"SPEAKER {audio_id} 1 {turn.start:.3f} "
-                    f"{turn.end - turn.start:.3f} <NA> <NA> "
-                    f"{turn.speaker} <NA> <NA>\n"
-                )
-        print(f"Wrote {rttm_path}", file=sys.stderr)
-        return 0
-
-    if "txt" in formats:
-        path = out_prefix.with_suffix(".diarized.txt")
+    if "txt" in args.formats:
+        path = output_path(out_prefix, ".diarized.txt")
         write_txt(path, attributed_segments)
         print(f"Wrote {path}", file=sys.stderr)
-    if "srt" in formats:
-        path = out_prefix.with_suffix(".diarized.srt")
+    if "srt" in args.formats:
+        path = output_path(out_prefix, ".diarized.srt")
         write_srt(path, attributed_segments)
         print(f"Wrote {path}", file=sys.stderr)
-    if "json" in formats:
-        path = out_prefix.with_suffix(".diarized.json")
+    if "json" in args.formats:
+        path = output_path(out_prefix, ".diarized.json")
         write_json(path, attributed_segments, turns)
         print(f"Wrote {path}", file=sys.stderr)
 

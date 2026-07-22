@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -189,3 +190,95 @@ def test_main_uses_normalized_records(tmp_path: Path, monkeypatch: pytest.Monkey
             "speaker": "SPEAKER_01",
         }
     ]
+
+
+def test_parse_formats_deduplicates_valid_values() -> None:
+    assert cli.parse_formats("txt, json,txt") == frozenset({"txt", "json"})
+
+
+@pytest.mark.parametrize("value", ["bogus", " , "])
+def test_parse_formats_rejects_invalid_selections(value: str) -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        cli.parse_formats(value)
+
+
+def test_parse_args_rejects_unknown_format() -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.parse_args(["audio.wav", "--formats", "bogus"])
+
+    assert error.value.code == 2
+
+
+def test_output_path_preserves_literal_prefix() -> None:
+    assert cli.output_path(
+        Path("report.v1"), ".diarized.txt"
+    ) == Path("report.v1.diarized.txt")
+
+
+def test_empty_transcription_writes_selected_transcript_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "silent.wav"
+    audio.touch()
+    monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
+    monkeypatch.setattr(cli, "transcribe", lambda *args: [])
+
+    assert cli.main([str(audio), "--no-diarize", "--formats", "txt"]) == 0
+    assert (tmp_path / "silent.diarized.txt").exists()
+    assert not (tmp_path / "silent.rttm").exists()
+
+
+def test_main_preserves_literal_output_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "speech.wav"
+    audio.touch()
+    output_prefix = tmp_path / "report.v1"
+    monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
+    monkeypatch.setattr(
+        cli,
+        "transcribe",
+        lambda *args: [cli.TranscriptSegment(0.0, 1.0, "hello")],
+    )
+
+    assert cli.main(
+        [
+            str(audio),
+            "--no-diarize",
+            "--formats",
+            "txt",
+            "-o",
+            str(output_prefix),
+        ]
+    ) == 0
+    assert (tmp_path / "report.v1.diarized.txt").exists()
+    assert not (tmp_path / "report.diarized.txt").exists()
+
+
+def test_diarization_only_writes_rttm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "speech.wav"
+    audio.touch()
+    monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
+    monkeypatch.setattr(
+        cli,
+        "diarize",
+        lambda wav: [cli.SpeakerTurn(0.0, 1.5, "SPEAKER_01")],
+    )
+
+    assert cli.main([str(audio), "--no-transcribe"]) == 0
+    rttm = tmp_path / "speech.rttm"
+    assert rttm.exists()
+    assert rttm.read_text().startswith(
+        "SPEAKER speech 1 0.000 1.500 <NA> <NA> SPEAKER_01"
+    )
+
+
+def test_main_rejects_disabling_both_operations(tmp_path: Path) -> None:
+    audio = tmp_path / "speech.wav"
+    audio.touch()
+
+    assert cli.main(
+        [str(audio), "--no-transcribe", "--no-diarize"]
+    ) == 2
