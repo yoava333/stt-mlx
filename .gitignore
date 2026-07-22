@@ -6,3 +6,4 @@ build/
 *.egg-info/
 .uv-cache/
 uv.lock
+.worktrees/
