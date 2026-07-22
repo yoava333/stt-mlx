@@ -47,18 +47,25 @@ def to_16k_mono_wav(src: Path, dst: Path) -> None:
         raise SystemExit("ffmpeg is required and not on PATH")
     subprocess.run(
         [
-            "ffmpeg", "-loglevel", "error", "-y",
-            "-i", str(src),
-            "-ar", "16000", "-ac", "1", "-acodec", "pcm_s16le",
+            "ffmpeg",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(src),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-acodec",
+            "pcm_s16le",
             str(dst),
         ],
         check=True,
     )
 
 
-def transcribe(
-    wav: Path, model: str, language: str | None
-) -> list[TranscriptSegment]:
+def transcribe(wav: Path, model: str, language: str | None) -> list[TranscriptSegment]:
     import mlx_whisper
 
     kwargs: dict[str, object] = {"path_or_hf_repo": model}
@@ -203,15 +210,32 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         prog="stt",
         description="Transcribe and diarize an audio file (mlx_whisper + senko).",
     )
-    p.add_argument("audio", type=Path, help="Input audio file (any format ffmpeg accepts)")
     p.add_argument(
-        "-o", "--output-prefix", type=Path, default=None,
+        "audio", type=Path, help="Input audio file (any format ffmpeg accepts)"
+    )
+    p.add_argument(
+        "-o",
+        "--output-prefix",
+        type=Path,
+        default=None,
         help="Output file prefix (default: input file's path without extension)",
     )
-    p.add_argument("--model", default=DEFAULT_MODEL, help=f"Whisper model HF repo (default: {DEFAULT_MODEL})")
-    p.add_argument("--language", default=None, help="Language code (e.g. he, en); auto-detect if omitted")
+    p.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Whisper model HF repo (default: {DEFAULT_MODEL})",
+    )
+    p.add_argument(
+        "--language",
+        default=None,
+        help="Language code (e.g. he, en); auto-detect if omitted",
+    )
     p.add_argument("--no-diarize", action="store_true", help="Skip diarization")
-    p.add_argument("--no-transcribe", action="store_true", help="Skip transcription (diarization only)")
+    p.add_argument(
+        "--no-transcribe",
+        action="store_true",
+        help="Skip transcription (diarization only)",
+    )
     p.add_argument(
         "--formats",
         type=parse_formats,
@@ -225,7 +249,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
 
     if args.no_diarize and args.no_transcribe:
-        print("error: --no-diarize and --no-transcribe both set; nothing to do", file=sys.stderr)
+        print(
+            "error: --no-diarize and --no-transcribe both set; nothing to do",
+            file=sys.stderr,
+        )
         return 2
 
     audio_in = args.audio.expanduser().resolve()
