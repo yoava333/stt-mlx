@@ -75,10 +75,10 @@ def fmt_ts(t: float) -> str:
 
 
 def fmt_srt(t: float) -> str:
-    h = int(t // 3600)
-    m = int((t % 3600) // 60)
-    s = int(t % 60)
-    ms = int(round((t - int(t)) * 1000))
+    total_ms = round(t * 1000)
+    total_seconds, ms = divmod(total_ms, 1000)
+    total_minutes, s = divmod(total_seconds, 60)
+    h, m = divmod(total_minutes, 60)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
