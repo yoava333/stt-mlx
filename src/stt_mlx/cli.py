@@ -8,11 +8,31 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 
 DEFAULT_MODEL = "mlx-community/ivrit-ai-whisper-large-v3-mlx"
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptSegment:
+    start: float
+    end: float
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class AttributedSegment(TranscriptSegment):
+    speaker: str
+
+
+@dataclass(frozen=True, slots=True)
+class SpeakerTurn:
+    start: float
+    end: float
+    speaker: str
 
 
 def to_16k_mono_wav(src: Path, dst: Path) -> None:
@@ -29,42 +49,70 @@ def to_16k_mono_wav(src: Path, dst: Path) -> None:
     )
 
 
-def transcribe(wav: Path, model: str, language: str | None) -> list[dict]:
+def transcribe(
+    wav: Path, model: str, language: str | None
+) -> list[TranscriptSegment]:
     import mlx_whisper
 
-    kwargs: dict[str, Any] = {"path_or_hf_repo": model}
+    kwargs: dict[str, object] = {"path_or_hf_repo": model}
     if language:
         kwargs["language"] = language
     result = mlx_whisper.transcribe(str(wav), **kwargs)
     return [
-        {"start": float(s["start"]), "end": float(s["end"]), "text": s["text"].strip()}
-        for s in result["segments"]
+        TranscriptSegment(
+            start=float(segment["start"]),
+            end=float(segment["end"]),
+            text=str(segment["text"]).strip(),
+        )
+        for segment in result["segments"]
     ]
 
 
-def diarize(wav: Path) -> list[tuple[float, float, str]]:
+def diarize(wav: Path) -> list[SpeakerTurn]:
     import senko
 
     diarizer = senko.Diarizer(device="auto", warmup=True, quiet=False)
     result = diarizer.diarize(str(wav), generate_colors=False)
-    turns: list[tuple[float, float, str]] = []
-    for s in result["merged_segments"]:
-        if isinstance(s, dict):
-            turns.append((float(s["start"]), float(s["end"]), str(s["speaker"])))
-        else:
-            turns.append((float(s.start), float(s.end), str(s.speaker)))
+    if result is None:
+        return []
+    turns: list[SpeakerTurn] = []
+    for segment in result["merged_segments"]:
+        if not isinstance(segment, Mapping):
+            raise TypeError("senko merged segments must be mappings")
+        turns.append(
+            SpeakerTurn(
+                start=float(segment["start"]),
+                end=float(segment["end"]),
+                speaker=str(segment["speaker"]),
+            )
+        )
     return turns
 
 
-def assign_speaker(seg: dict, turns: list[tuple[float, float, str]]) -> str:
-    best_overlap = 0.0
-    best_spk = "UNKNOWN"
-    for ts, te, spk in turns:
-        overlap = max(0.0, min(seg["end"], te) - max(seg["start"], ts))
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_spk = spk
-    return best_spk
+def assign_speakers(
+    segments: list[TranscriptSegment], turns: list[SpeakerTurn]
+) -> list[AttributedSegment]:
+    attributed: list[AttributedSegment] = []
+    for segment in segments:
+        best_overlap = 0.0
+        best_speaker = "UNKNOWN"
+        for turn in turns:
+            overlap = max(
+                0.0,
+                min(segment.end, turn.end) - max(segment.start, turn.start),
+            )
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = turn.speaker
+        attributed.append(
+            AttributedSegment(
+                start=segment.start,
+                end=segment.end,
+                text=segment.text,
+                speaker=best_speaker,
+            )
+        )
+    return attributed
 
 
 def fmt_ts(t: float) -> str:
@@ -82,33 +130,48 @@ def fmt_srt(t: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def write_txt(path: Path, segments: list[dict]) -> None:
+def write_txt(path: Path, segments: list[AttributedSegment]) -> None:
     lines: list[str] = []
     current_spk: str | None = None
     for seg in segments:
-        if seg["speaker"] != current_spk:
+        if seg.speaker != current_spk:
             if current_spk is not None:
                 lines.append("")
-            lines.append(f"=== {seg['speaker']} ===")
-            current_spk = seg["speaker"]
-        lines.append(f"[{fmt_ts(seg['start'])} --> {fmt_ts(seg['end'])}] {seg['text']}")
+            lines.append(f"=== {seg.speaker} ===")
+            current_spk = seg.speaker
+        lines.append(f"[{fmt_ts(seg.start)} --> {fmt_ts(seg.end)}] {seg.text}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_srt(path: Path, segments: list[dict]) -> None:
+def write_srt(path: Path, segments: list[AttributedSegment]) -> None:
     lines: list[str] = []
     for i, seg in enumerate(segments, 1):
         lines.append(str(i))
-        lines.append(f"{fmt_srt(seg['start'])} --> {fmt_srt(seg['end'])}")
-        lines.append(f"{seg['speaker']}: {seg['text']}")
+        lines.append(f"{fmt_srt(seg.start)} --> {fmt_srt(seg.end)}")
+        lines.append(f"{seg.speaker}: {seg.text}")
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def write_json(path: Path, segments: list[dict], turns: list[tuple[float, float, str]]) -> None:
+def write_json(
+    path: Path,
+    segments: list[AttributedSegment],
+    turns: list[SpeakerTurn],
+) -> None:
     payload = {
-        "segments": segments,
-        "diarization": [{"start": s, "end": e, "speaker": spk} for s, e, spk in turns],
+        "segments": [
+            {
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
+                "speaker": segment.speaker,
+            }
+            for segment in segments
+        ],
+        "diarization": [
+            {"start": turn.start, "end": turn.end, "speaker": turn.speaker}
+            for turn in turns
+        ],
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -154,51 +217,63 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Converting → {wav}", file=sys.stderr, flush=True)
         to_16k_mono_wav(audio_in, wav)
 
-        segments: list[dict] = []
+        segments: list[TranscriptSegment] = []
         if not args.no_transcribe:
             print(f"Transcribing with {args.model}...", file=sys.stderr, flush=True)
             segments = transcribe(wav, args.model, args.language)
             print(f"  {len(segments)} segments", file=sys.stderr, flush=True)
 
-        turns: list[tuple[float, float, str]] = []
+        turns: list[SpeakerTurn] = []
         if not args.no_diarize:
             print("Diarizing with senko...", file=sys.stderr, flush=True)
             turns = diarize(wav)
             print(f"  {len(turns)} speaker turns", file=sys.stderr, flush=True)
 
     if turns:
-        for seg in segments:
-            seg["speaker"] = assign_speaker(seg, turns)
-    elif segments:
-        for seg in segments:
-            seg["speaker"] = "SPEAKER_00"
+        attributed_segments = assign_speakers(segments, turns)
+    else:
+        attributed_segments = [
+            AttributedSegment(
+                start=segment.start,
+                end=segment.end,
+                text=segment.text,
+                speaker="SPEAKER_00",
+            )
+            for segment in segments
+        ]
 
     if not segments:
         rttm_path = out_prefix.with_suffix(".rttm")
         with rttm_path.open("w", encoding="utf-8") as f:
             audio_id = audio_in.stem
-            for s, e, spk in turns:
-                f.write(f"SPEAKER {audio_id} 1 {s:.3f} {e - s:.3f} <NA> <NA> {spk} <NA> <NA>\n")
+            for turn in turns:
+                f.write(
+                    f"SPEAKER {audio_id} 1 {turn.start:.3f} "
+                    f"{turn.end - turn.start:.3f} <NA> <NA> "
+                    f"{turn.speaker} <NA> <NA>\n"
+                )
         print(f"Wrote {rttm_path}", file=sys.stderr)
         return 0
 
     if "txt" in formats:
         path = out_prefix.with_suffix(".diarized.txt")
-        write_txt(path, segments)
+        write_txt(path, attributed_segments)
         print(f"Wrote {path}", file=sys.stderr)
     if "srt" in formats:
         path = out_prefix.with_suffix(".diarized.srt")
-        write_srt(path, segments)
+        write_srt(path, attributed_segments)
         print(f"Wrote {path}", file=sys.stderr)
     if "json" in formats:
         path = out_prefix.with_suffix(".diarized.json")
-        write_json(path, segments, turns)
+        write_json(path, attributed_segments, turns)
         print(f"Wrote {path}", file=sys.stderr)
 
     if turns:
         spk_dur: dict[str, float] = {}
-        for s, e, spk in turns:
-            spk_dur[spk] = spk_dur.get(spk, 0.0) + (e - s)
+        for turn in turns:
+            spk_dur[turn.speaker] = spk_dur.get(turn.speaker, 0.0) + (
+                turn.end - turn.start
+            )
         print("\nSpeaker totals:", file=sys.stderr)
         for spk, dur in sorted(spk_dur.items(), key=lambda x: -x[1]):
             print(f"  {spk}: {dur / 60:.1f} min", file=sys.stderr)
