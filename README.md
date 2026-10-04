@@ -5,7 +5,9 @@ Local, MLX-accelerated speech-to-text with optional speaker diarization for Appl
 ## Features
 
 - MLX-accelerated Whisper transcription on Apple Silicon
+- Fused scaled-dot-product attention for lower GPU runtime
 - Optional speaker diarization
+- Persistent voice enrollment for named speaker tags
 - TXT, SRT, JSON, and RTTM output
 - Automatic conversion of FFmpeg-supported audio to 16 kHz mono WAV
 - Configurable Whisper model and language
@@ -25,17 +27,20 @@ brew install uv ffmpeg
 
 ## Installation
 
-Install the CLI directly from GitHub:
+Clone the repository, then install the global CLI from the checkout:
 
 ```bash
-uv tool install git+https://github.com/yoava333/stt-mlx.git
+./install.sh
 ```
 
-Upgrade an existing installation with:
+Run the same script again after pulling changes to upgrade the installation:
 
 ```bash
-uv tool upgrade stt-mlx
+./install.sh
 ```
+
+The installer rebuilds the tool with Python 3.13. Do not install it with the
+system-default Python: Senko's Core ML models do not load under Python 3.14.
 
 The first transcription and diarization runs download the selected model weights.
 
@@ -46,6 +51,67 @@ Transcribe and diarize an audio file:
 ```bash
 stt recording.mp3
 ```
+
+Specify the exact number of speakers when it is known:
+
+```bash
+stt recording.mp3 --num-speakers 3
+```
+
+Enroll a person once using a clean recording that contains only their voice:
+
+```bash
+stt yoav-voice-sample.m4a --enroll-speaker "Yoav"
+```
+
+Future diarized transcripts identify matching speaker tags automatically:
+
+```text
+=== Yoav ===
+[00:00:03.200 --> 00:00:07.100] ...
+```
+
+Voice profiles are stored locally in
+`~/.local/share/stt-mlx/speaker-profiles.json` (or under `$XDG_DATA_HOME` when
+set). During every diarized run, an unmatched voice automatically creates a
+persistent anonymous profile with a tag such as `speaker-a1b2c3d4`. Matching
+voices reuse that tag in later recordings. Use `stt profiles rename` once you
+know who it belongs to.
+
+Each profile has a stable unique ID, a unique speaker tag, and one or more voice
+samples. Explicitly enrolling the same tag again adds another sample to the
+existing profile. Matching compares a detected speaker with every sample and
+uses the strongest result, which supports enrollment across different recording
+conditions without averaging distinct samples together. Weak or ambiguous
+matches remain anonymous. Voice matching is intended for transcript labeling,
+not identity authentication.
+
+List the enrolled profiles and their sample counts:
+
+```bash
+stt profiles list
+```
+
+Rename a speaker tag using either its profile ID or exact current tag:
+
+```bash
+stt profiles rename "Yoav" "Yoav Aharoni"
+```
+
+Delete a misleading profile:
+
+```bash
+stt profiles delete "Wrong speaker"
+```
+
+Combine duplicate or similar profiles under one canonical tag:
+
+```bash
+stt profiles combine "Possible Yoav" "Yoav Aharoni"
+```
+
+The source profile's samples are added to the target profile, then the source
+is removed. The target keeps its ID and speaker tag.
 
 Transcribe without diarization:
 
@@ -69,6 +135,10 @@ stt recording.mp3 \
   --output-prefix results/interview \
   --formats txt,srt,json
 ```
+
+The default model is Hebrew-specific, so `stt` defaults to `--language he`. This
+skips a redundant language-detection encoder pass. Pass another language when
+using a model for other speech.
 
 Run `stt --help` for the complete CLI reference.
 
@@ -101,4 +171,5 @@ uv build
 - The project targets Apple Silicon because transcription uses MLX.
 - Transcription and diarization currently run sequentially.
 - Speaker attribution uses maximum timestamp overlap between transcript segments and diarization turns.
+- Voice identification accuracy depends on the enrollment audio, microphone, noise, and recording conditions.
 - Model downloads can be large and require network access on first use.

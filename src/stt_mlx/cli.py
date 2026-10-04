@@ -13,8 +13,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from stt_mlx.speaker_profiles import (
+    combine_profiles,
+    create_anonymous_profile,
+    default_profiles_path,
+    delete_profile,
+    enroll_profile,
+    load_profiles,
+    match_speakers,
+    rename_profile,
+)
 
 DEFAULT_MODEL = "mlx-community/ivrit-ai-whisper-large-v3-mlx"
+DEFAULT_LANGUAGE = "he"
 OutputFormat = Literal["txt", "srt", "json"]
 FORMAT_NAMES: dict[str, OutputFormat] = {
     "txt": "txt",
@@ -42,6 +53,12 @@ class SpeakerTurn:
     speaker: str
 
 
+@dataclass(frozen=True, slots=True)
+class DiarizationResult:
+    turns: list[SpeakerTurn]
+    centroids: dict[str, list[float]]
+
+
 def to_16k_mono_wav(src: Path, dst: Path) -> None:
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is required and not on PATH")
@@ -65,13 +82,15 @@ def to_16k_mono_wav(src: Path, dst: Path) -> None:
     )
 
 
-def transcribe(wav: Path, model: str, language: str | None) -> list[TranscriptSegment]:
+def transcribe(wav: Path, model: str, language: str) -> list[TranscriptSegment]:
     import mlx_whisper
 
-    kwargs: dict[str, object] = {"path_or_hf_repo": model}
-    if language:
-        kwargs["language"] = language
-    result = mlx_whisper.transcribe(str(wav), **kwargs)
+    from stt_mlx.whisper_performance import enable_fast_attention
+
+    enable_fast_attention()
+    result = mlx_whisper.transcribe(
+        str(wav), path_or_hf_repo=model, language=language, verbose=False
+    )
     return [
         TranscriptSegment(
             start=float(segment["start"]),
@@ -82,13 +101,19 @@ def transcribe(wav: Path, model: str, language: str | None) -> list[TranscriptSe
     ]
 
 
-def diarize(wav: Path) -> list[SpeakerTurn]:
+def diarize(wav: Path, num_speakers: int | None) -> DiarizationResult:
     import senko
 
     diarizer = senko.Diarizer(device="auto", warmup=True, quiet=False)
+    if num_speakers is not None:
+        # Senko's fixed-count mode is implemented by its spectral cluster.
+        # Select it for both short- and long-recording code paths.
+        diarizer.spectral_cluster.cluster.k = num_speakers
+        diarizer.spectral_cluster.min_cluster_size = 0
+        diarizer.umap_hdbscan_cluster = diarizer.spectral_cluster
     result = diarizer.diarize(str(wav), generate_colors=False)
     if result is None:
-        return []
+        return DiarizationResult([], {})
     turns: list[SpeakerTurn] = []
     for segment in result["merged_segments"]:
         if not isinstance(segment, Mapping):
@@ -100,7 +125,23 @@ def diarize(wav: Path) -> list[SpeakerTurn]:
                 speaker=str(segment["speaker"]),
             )
         )
-    return turns
+    raw_centroids = result["speaker_centroids"]
+    if not isinstance(raw_centroids, Mapping):
+        raise TypeError("senko speaker centroids must be a mapping")
+    centroids = {
+        str(speaker): [float(value) for value in centroid]
+        for speaker, centroid in raw_centroids.items()
+    }
+    return DiarizationResult(turns, centroids)
+
+
+def rename_speakers(
+    turns: list[SpeakerTurn], names: Mapping[str, str]
+) -> list[SpeakerTurn]:
+    return [
+        SpeakerTurn(turn.start, turn.end, names.get(turn.speaker, turn.speaker))
+        for turn in turns
+    ]
 
 
 def assign_speakers(
@@ -201,6 +242,20 @@ def parse_formats(value: str) -> frozenset[OutputFormat]:
     return frozenset(FORMAT_NAMES[name] for name in names)
 
 
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def speaker_name(value: str) -> str:
+    name = value.strip()
+    if not name or "\n" in name or "\r" in name:
+        raise argparse.ArgumentTypeError("must be a non-empty single-line name")
+    return name
+
+
 def output_path(prefix: Path, suffix: str) -> Path:
     return prefix.parent / f"{prefix.name}{suffix}"
 
@@ -209,6 +264,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="stt",
         description="Transcribe and diarize an audio file (mlx_whisper + senko).",
+        epilog="Manage enrolled voices with: stt profiles --help",
     )
     p.add_argument(
         "audio", type=Path, help="Input audio file (any format ffmpeg accepts)"
@@ -227,8 +283,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--language",
+        default=DEFAULT_LANGUAGE,
+        help=f"Language code (default: {DEFAULT_LANGUAGE})",
+    )
+    p.add_argument(
+        "--num-speakers",
+        type=positive_int,
         default=None,
-        help="Language code (e.g. he, en); auto-detect if omitted",
+        help="Exact number of speakers (default: detect automatically)",
+    )
+    p.add_argument(
+        "--enroll-speaker",
+        type=speaker_name,
+        metavar="NAME",
+        help="Save this single-speaker recording as NAME for future identification",
     )
     p.add_argument("--no-diarize", action="store_true", help="Skip diarization")
     p.add_argument(
@@ -245,13 +313,77 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def parse_profiles_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="stt profiles", description="Manage enrolled speaker profiles."
+    )
+    commands = parser.add_subparsers(dest="profiles_command", required=True)
+    commands.add_parser("list", help="List all enrolled speaker profiles")
+
+    rename = commands.add_parser("rename", help="Change a profile's speaker tag")
+    rename.add_argument("profile", help="Profile ID or exact speaker tag")
+    rename.add_argument("new_tag", type=speaker_name, help="New unique speaker tag")
+
+    delete = commands.add_parser("delete", help="Delete a speaker profile")
+    delete.add_argument("profile", help="Profile ID or exact speaker tag")
+
+    combine = commands.add_parser(
+        "combine", help="Merge a source profile into a target profile"
+    )
+    combine.add_argument("source", help="Source profile ID or exact speaker tag")
+    combine.add_argument("target", help="Target profile ID or exact speaker tag")
+    return parser.parse_args(argv)
+
+
+def manage_profiles(argv: list[str]) -> int:
+    args = parse_profiles_args(argv)
+    path = default_profiles_path()
+    try:
+        if args.profiles_command == "list":
+            profiles = load_profiles(path)
+            if not profiles:
+                print("No speaker profiles enrolled.")
+                return 0
+            print("ID\tTAG\tSAMPLES")
+            for profile in profiles:
+                print(f"{profile.id}\t{profile.tag}\t{len(profile.embeddings)}")
+            return 0
+        if args.profiles_command == "rename":
+            profile = rename_profile(path, args.profile, args.new_tag)
+            print(f"Renamed profile {profile.id} to {profile.tag}")
+            return 0
+        if args.profiles_command == "delete":
+            profile = delete_profile(path, args.profile)
+            print(f"Deleted profile {profile.id} ({profile.tag})")
+            return 0
+        if args.profiles_command == "combine":
+            profile = combine_profiles(path, args.source, args.target)
+            print(
+                f"Combined profiles as {profile.id} ({profile.tag}); "
+                f"{len(profile.embeddings)} samples"
+            )
+            return 0
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    raise AssertionError(f"unknown profiles command: {args.profiles_command}")
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv if argv is not None else sys.argv[1:])
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    if raw_argv and raw_argv[0] == "profiles":
+        return manage_profiles(raw_argv[1:])
+    args = parse_args(raw_argv)
 
     if args.no_diarize and args.no_transcribe:
         print(
             "error: --no-diarize and --no-transcribe both set; nothing to do",
             file=sys.stderr,
+        )
+        return 2
+    if args.enroll_speaker and args.no_diarize:
+        print(
+            "error: --enroll-speaker cannot be used with --no-diarize", file=sys.stderr
         )
         return 2
 
@@ -268,16 +400,71 @@ def main(argv: list[str] | None = None) -> int:
         to_16k_mono_wav(audio_in, wav)
 
         segments: list[TranscriptSegment] = []
-        if not args.no_transcribe:
+        if not args.no_transcribe and not args.enroll_speaker:
             print(f"Transcribing with {args.model}...", file=sys.stderr, flush=True)
             segments = transcribe(wav, args.model, args.language)
             print(f"  {len(segments)} segments", file=sys.stderr, flush=True)
 
-        turns: list[SpeakerTurn] = []
+        diarization = DiarizationResult([], {})
         if not args.no_diarize:
             print("Diarizing with senko...", file=sys.stderr, flush=True)
-            turns = diarize(wav)
-            print(f"  {len(turns)} speaker turns", file=sys.stderr, flush=True)
+            speaker_count = 1 if args.enroll_speaker else args.num_speakers
+            diarization = diarize(wav, speaker_count)
+            print(
+                f"  {len(diarization.turns)} speaker turns",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    if args.enroll_speaker:
+        if len(diarization.centroids) != 1:
+            print(
+                "error: enrollment audio must contain detectable speech from one speaker",
+                file=sys.stderr,
+            )
+            return 2
+        embedding = next(iter(diarization.centroids.values()))
+        profiles_path = default_profiles_path()
+        try:
+            profile = enroll_profile(profiles_path, args.enroll_speaker, embedding)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            print(f"error: could not save speaker profile: {error}", file=sys.stderr)
+            return 2
+        print(
+            f"Enrolled {profile.tag} as profile {profile.id} "
+            f"({len(profile.embeddings)} samples) in {profiles_path}",
+            file=sys.stderr,
+        )
+        return 0
+
+    turns = diarization.turns
+    if turns and diarization.centroids:
+        profiles_path = default_profiles_path()
+        try:
+            profiles = load_profiles(profiles_path)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            print(f"error: could not load speaker profiles: {error}", file=sys.stderr)
+            return 2
+        names = match_speakers(diarization.centroids, profiles)
+        for speaker, centroid in diarization.centroids.items():
+            if speaker in names:
+                continue
+            try:
+                profile = create_anonymous_profile(profiles_path, centroid)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+                print(
+                    f"error: could not create speaker profile: {error}",
+                    file=sys.stderr,
+                )
+                return 2
+            names[speaker] = profile.tag
+            print(
+                f"  Created profile {profile.id} ({profile.tag}) for {speaker}",
+                file=sys.stderr,
+            )
+        turns = rename_speakers(turns, names)
+        for speaker, name in sorted(names.items()):
+            print(f"  Identified {speaker} as {name}", file=sys.stderr)
 
     if args.no_transcribe:
         rttm_path = output_path(out_prefix, ".rttm")
