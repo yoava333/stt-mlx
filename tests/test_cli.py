@@ -493,3 +493,53 @@ def test_main_rejects_disabling_both_operations(tmp_path: Path) -> None:
     audio.touch()
 
     assert cli.main([str(audio), "--no-transcribe", "--no-diarize"]) == 2
+
+
+def test_resolve_model_defaults_per_engine_and_respects_explicit() -> None:
+    assert cli.resolve_model("whisper", None) == cli.DEFAULT_MODEL
+    assert cli.resolve_model("parakeet", None) == cli.PARAKEET_DEFAULT_MODEL
+    assert cli.resolve_model("parakeet", "custom/repo") == "custom/repo"
+
+
+def test_parse_args_defaults_to_whisper_engine() -> None:
+    assert cli.parse_args(["audio.wav"]).engine == "whisper"
+
+
+def test_parse_args_accepts_parakeet_engine() -> None:
+    assert cli.parse_args(["audio.wav", "--engine", "parakeet"]).engine == "parakeet"
+
+
+def test_parse_args_rejects_unknown_engine() -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.parse_args(["audio.wav", "--engine", "bogus"])
+
+    assert error.value.code == 2
+
+
+def test_main_dispatches_to_parakeet_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "speech.wav"
+    audio.touch()
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
+    monkeypatch.setattr(
+        cli, "transcribe", lambda *a: pytest.fail("whisper must not run")
+    )
+
+    def fake_parakeet(wav: Path, model: str, language: str) -> list:
+        calls["model"] = model
+        return [cli.TranscriptSegment(0.0, 1.0, "שלום")]
+
+    monkeypatch.setattr(cli, "transcribe_with_parakeet", fake_parakeet)
+
+    assert (
+        cli.main(
+            [str(audio), "--engine", "parakeet", "--no-diarize", "--formats", "json"]
+        )
+        == 0
+    )
+    assert calls["model"] == cli.PARAKEET_DEFAULT_MODEL
+    assert json.loads((tmp_path / "speech.diarized.json").read_text())["segments"] == [
+        {"start": 0.0, "end": 1.0, "text": "שלום", "speaker": "SPEAKER_00"}
+    ]

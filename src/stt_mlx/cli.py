@@ -25,7 +25,9 @@ from stt_mlx.speaker_profiles import (
 )
 
 DEFAULT_MODEL = "mlx-community/ivrit-ai-whisper-large-v3-mlx"
+PARAKEET_DEFAULT_MODEL = "thewh1teagle/parakeet-tdt-0.6b-v3-he"
 DEFAULT_LANGUAGE = "he"
+ENGINES = ("whisper", "parakeet")
 OutputFormat = Literal["txt", "srt", "json"]
 FORMAT_NAMES: dict[str, OutputFormat] = {
     "txt": "txt",
@@ -99,6 +101,20 @@ def transcribe(wav: Path, model: str, language: str) -> list[TranscriptSegment]:
         )
         for segment in result["segments"]
     ]
+
+
+def transcribe_with_parakeet(
+    wav: Path, model: str, language: str
+) -> list[TranscriptSegment]:
+    from stt_mlx.parakeet_transcribe import transcribe_parakeet
+
+    return transcribe_parakeet(wav, model, language)
+
+
+def resolve_model(engine: str, model: str | None) -> str:
+    if model is not None:
+        return model
+    return PARAKEET_DEFAULT_MODEL if engine == "parakeet" else DEFAULT_MODEL
 
 
 def diarize(wav: Path, num_speakers: int | None) -> DiarizationResult:
@@ -277,9 +293,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Output file prefix (default: input file's path without extension)",
     )
     p.add_argument(
+        "--engine",
+        choices=ENGINES,
+        default="whisper",
+        help="Transcription backend (default: whisper)",
+    )
+    p.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
-        help=f"Whisper model HF repo (default: {DEFAULT_MODEL})",
+        default=None,
+        help=(
+            "Transcription model HF repo. Defaults to "
+            f"{DEFAULT_MODEL} for whisper and {PARAKEET_DEFAULT_MODEL} for parakeet."
+        ),
     )
     p.add_argument(
         "--language",
@@ -401,8 +426,16 @@ def main(argv: list[str] | None = None) -> int:
 
         segments: list[TranscriptSegment] = []
         if not args.no_transcribe and not args.enroll_speaker:
-            print(f"Transcribing with {args.model}...", file=sys.stderr, flush=True)
-            segments = transcribe(wav, args.model, args.language)
+            model = resolve_model(args.engine, args.model)
+            print(
+                f"Transcribing with {args.engine} ({model})...",
+                file=sys.stderr,
+                flush=True,
+            )
+            transcriber = (
+                transcribe_with_parakeet if args.engine == "parakeet" else transcribe
+            )
+            segments = transcriber(wav, model, args.language)
             print(f"  {len(segments)} segments", file=sys.stderr, flush=True)
 
         diarization = DiarizationResult([], {})
