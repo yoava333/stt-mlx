@@ -10,7 +10,7 @@ Local, MLX-accelerated speech-to-text with optional speaker diarization for Appl
 - Persistent voice enrollment for named speaker tags
 - TXT, SRT, JSON, and RTTM output
 - Automatic conversion of FFmpeg-supported audio to 16 kHz mono WAV
-- Configurable Whisper model and language
+- Configurable transcription engine (MLX Whisper or Hebrew Parakeet-TDT), model, and language
 
 ## Requirements
 
@@ -139,6 +139,20 @@ stt recording.mp3 \
 The default model is Hebrew-specific, so `stt` defaults to `--language he`. This
 skips a redundant language-detection encoder pass. Pass another language when
 using a model for other speech.
+
+### Transcription engine
+
+`stt` transcribes with MLX Whisper by default. Pass `--engine parakeet` to use
+the Hebrew [Parakeet-TDT](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he)
+model instead, which runs on the GPU through PyTorch MPS:
+
+```bash
+stt recording.m4a --engine parakeet
+```
+
+Each engine has its own default model, so `--model` is only needed to override
+it. Diarization, speaker profiles, and all output formats behave identically
+across engines. Parakeet is Hebrew-only, so `--language` is ignored for it.
 
 Run `stt --help` for the complete CLI reference.
 
