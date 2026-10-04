@@ -295,8 +295,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--engine",
         choices=ENGINES,
-        default="whisper",
-        help="Transcription backend (default: whisper)",
+        default="parakeet",
+        help="Transcription backend (default: parakeet)",
     )
     p.add_argument(
         "--model",

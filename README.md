@@ -1,10 +1,10 @@
 # stt-mlx
 
-Local, MLX-accelerated speech-to-text with optional speaker diarization for Apple Silicon Macs. `stt-mlx` combines [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) with [Senko](https://github.com/narcotic-sh/senko) and writes speaker-attributed transcripts as text, subtitles, or JSON.
+Local, GPU-accelerated speech-to-text with optional speaker diarization for Apple Silicon Macs. `stt-mlx` transcribes with Hebrew [Parakeet-TDT](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he) by default or [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper), pairs either with [Senko](https://github.com/narcotic-sh/senko) diarization, and writes speaker-attributed transcripts as text, subtitles, or JSON.
 
 ## Features
 
-- MLX-accelerated Whisper transcription on Apple Silicon
+- Fast Hebrew Parakeet-TDT transcription (default), or MLX Whisper, on Apple Silicon
 - Fused scaled-dot-product attention for lower GPU runtime
 - Optional speaker diarization
 - Persistent voice enrollment for named speaker tags
@@ -142,17 +142,20 @@ using a model for other speech.
 
 ### Transcription engine
 
-`stt` transcribes with MLX Whisper by default. Pass `--engine parakeet` to use
-the Hebrew [Parakeet-TDT](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he)
-model instead, which runs on the GPU through PyTorch MPS:
+`stt` transcribes with the Hebrew
+[Parakeet-TDT](https://huggingface.co/thewh1teagle/parakeet-tdt-0.6b-v3-he)
+model by default, which runs on the GPU through PyTorch MPS and transcribes much
+faster than Whisper. Pass `--engine whisper` to use MLX Whisper instead:
 
 ```bash
-stt recording.m4a --engine parakeet
+stt recording.m4a                     # Parakeet (default)
+stt recording.m4a --engine whisper    # MLX Whisper
 ```
 
 Each engine has its own default model, so `--model` is only needed to override
 it. Diarization, speaker profiles, and all output formats behave identically
-across engines. Parakeet is Hebrew-only, so `--language` is ignored for it.
+across engines. Parakeet is Hebrew-only, so `--language` applies only to
+Whisper.
 
 Run `stt --help` for the complete CLI reference.
 

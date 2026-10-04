@@ -199,7 +199,7 @@ def test_main_uses_normalized_records(
         ),
     )
 
-    assert cli.main([str(audio), "--formats", "json"]) == 0
+    assert cli.main([str(audio), "--engine", "whisper", "--formats", "json"]) == 0
     assert json.loads((tmp_path / "speech.diarized.json").read_text())["segments"] == [
         {
             "start": 0.0,
@@ -267,7 +267,12 @@ def test_empty_transcription_writes_selected_transcript_format(
     monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
     monkeypatch.setattr(cli, "transcribe", lambda *args: [])
 
-    assert cli.main([str(audio), "--no-diarize", "--formats", "txt"]) == 0
+    assert (
+        cli.main(
+            [str(audio), "--engine", "whisper", "--no-diarize", "--formats", "txt"]
+        )
+        == 0
+    )
     assert (tmp_path / "silent.diarized.txt").exists()
     assert not (tmp_path / "silent.rttm").exists()
 
@@ -289,6 +294,8 @@ def test_main_preserves_literal_output_prefix(
         cli.main(
             [
                 str(audio),
+                "--engine",
+                "whisper",
                 "--no-diarize",
                 "--formats",
                 "txt",
@@ -383,7 +390,7 @@ def test_main_replaces_matching_speaker_tags_with_enrolled_name(
         ),
     )
 
-    assert cli.main([str(audio), "--formats", "json"]) == 0
+    assert cli.main([str(audio), "--engine", "whisper", "--formats", "json"]) == 0
     output = json.loads((tmp_path / "meeting.diarized.json").read_text())
     assert output["segments"][0]["speaker"] == "Yoav"
     assert output["diarization"][0]["speaker"] == "Yoav"
@@ -411,7 +418,7 @@ def test_main_creates_and_uses_anonymous_profile_for_unmatched_speaker(
         ),
     )
 
-    assert cli.main([str(audio), "--formats", "json"]) == 0
+    assert cli.main([str(audio), "--engine", "whisper", "--formats", "json"]) == 0
 
     profile = json.loads(profiles.read_text())["profiles"][0]
     assert profile["tag"].startswith("speaker-")
@@ -419,7 +426,7 @@ def test_main_creates_and_uses_anonymous_profile_for_unmatched_speaker(
     assert output["segments"][0]["speaker"] == profile["tag"]
     assert output["diarization"][0]["speaker"] == profile["tag"]
 
-    assert cli.main([str(audio), "--formats", "json"]) == 0
+    assert cli.main([str(audio), "--engine", "whisper", "--formats", "json"]) == 0
     stored_profiles = json.loads(profiles.read_text())["profiles"]
     assert len(stored_profiles) == 1
     assert stored_profiles[0]["id"] == profile["id"]
@@ -501,12 +508,12 @@ def test_resolve_model_defaults_per_engine_and_respects_explicit() -> None:
     assert cli.resolve_model("parakeet", "custom/repo") == "custom/repo"
 
 
-def test_parse_args_defaults_to_whisper_engine() -> None:
-    assert cli.parse_args(["audio.wav"]).engine == "whisper"
+def test_parse_args_defaults_to_parakeet_engine() -> None:
+    assert cli.parse_args(["audio.wav"]).engine == "parakeet"
 
 
-def test_parse_args_accepts_parakeet_engine() -> None:
-    assert cli.parse_args(["audio.wav", "--engine", "parakeet"]).engine == "parakeet"
+def test_parse_args_accepts_whisper_engine() -> None:
+    assert cli.parse_args(["audio.wav", "--engine", "whisper"]).engine == "whisper"
 
 
 def test_parse_args_rejects_unknown_engine() -> None:
