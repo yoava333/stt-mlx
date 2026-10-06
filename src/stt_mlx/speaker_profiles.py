@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_MATCH_THRESHOLD = 0.70
-DEFAULT_MATCH_MARGIN = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,36 +203,22 @@ def match_speakers(
     centroids: Mapping[str, Sequence[float]],
     profiles: Sequence[SpeakerProfile],
     threshold: float = DEFAULT_MATCH_THRESHOLD,
-    margin: float = DEFAULT_MATCH_MARGIN,
 ) -> dict[str, str]:
-    """Return unambiguous one-to-one matches between speakers and profiles."""
+    """Return one-to-one matches, assigning the most similar pairs first."""
     candidates: list[tuple[float, str, str, str]] = []
     for speaker, centroid in centroids.items():
-        scores = sorted(
-            (
-                (
-                    max(
-                        cosine_similarity(centroid, embedding)
-                        for embedding in profile.embeddings
-                    ),
-                    profile.id,
-                    profile.tag,
-                )
-                for profile in profiles
-            ),
-            reverse=True,
-        )
-        if not scores:
-            continue
-        score, profile_id, tag = scores[0]
-        runner_up = scores[1][0] if len(scores) > 1 else -1.0
-        if score >= threshold and score - runner_up >= margin:
-            candidates.append((score, speaker, profile_id, tag))
+        for profile in profiles:
+            score = max(
+                cosine_similarity(centroid, embedding)
+                for embedding in profile.embeddings
+            )
+            if score >= threshold:
+                candidates.append((score, speaker, profile.id, profile.tag))
 
     matches: dict[str, str] = {}
     used_profiles: set[str] = set()
     for _score, speaker, profile_id, tag in sorted(candidates, reverse=True):
-        if profile_id not in used_profiles:
+        if speaker not in matches and profile_id not in used_profiles:
             matches[speaker] = tag
             used_profiles.add(profile_id)
     return matches

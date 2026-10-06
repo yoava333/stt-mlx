@@ -95,18 +95,30 @@ def test_match_speakers_uses_best_embedding_and_unique_assignment() -> None:
     assert matches == {"SPEAKER_01": "Yoav"}
 
 
-def test_match_speakers_rejects_ambiguous_match() -> None:
+def test_match_speakers_picks_best_profile_even_when_runner_up_is_close() -> None:
     matches = match_speakers(
         {"SPEAKER_01": [1.0, 0.0]},
         [
-            SpeakerProfile("a", "Person A", [[1.0, 0.0]]),
-            SpeakerProfile("b", "Person B", [[0.999, 0.045]]),
+            SpeakerProfile("a", "Person A", [[0.999, 0.045]]),
+            SpeakerProfile("b", "Person B", [[1.0, 0.0]]),
         ],
         threshold=0.7,
-        margin=0.05,
     )
 
-    assert matches == {}
+    assert matches == {"SPEAKER_01": "Person B"}
+
+
+def test_match_speakers_gives_contested_profile_to_closest_speaker() -> None:
+    matches = match_speakers(
+        {"SPEAKER_01": [0.9, 0.1], "SPEAKER_02": [1.0, 0.0]},
+        [
+            SpeakerProfile("a", "Person A", [[1.0, 0.0]]),
+            SpeakerProfile("b", "Person B", [[0.0, 1.0]]),
+        ],
+        threshold=0.7,
+    )
+
+    assert matches == {"SPEAKER_02": "Person A"}
 
 
 def test_match_speakers_rejects_weak_match() -> None:
