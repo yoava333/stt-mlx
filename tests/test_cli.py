@@ -396,6 +396,37 @@ def test_main_replaces_matching_speaker_tags_with_enrolled_name(
     assert output["diarization"][0]["speaker"] == "Yoav"
 
 
+def test_main_adds_matched_speaker_centroid_to_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "meeting.wav"
+    audio.touch()
+    profiles = tmp_path / "profiles.json"
+    profiles.write_text(
+        json.dumps(
+            {"profiles": [{"id": "yoav-id", "tag": "Yoav", "embeddings": [[1.0, 0.0]]}]}
+        )
+    )
+    monkeypatch.setattr(cli, "default_profiles_path", lambda: profiles)
+    monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
+    monkeypatch.setattr(cli, "transcribe", lambda *args: [])
+    monkeypatch.setattr(
+        cli,
+        "diarize",
+        lambda wav, num_speakers: cli.DiarizationResult(
+            [cli.SpeakerTurn(0.0, 1.0, "SPEAKER_01")],
+            {"SPEAKER_01": [0.99, 0.01]},
+        ),
+    )
+
+    assert cli.main([str(audio), "--engine", "whisper", "--formats", "json"]) == 0
+
+    stored = json.loads(profiles.read_text())["profiles"]
+    assert stored == [
+        {"id": "yoav-id", "tag": "Yoav", "embeddings": [[1.0, 0.0], [0.99, 0.01]]}
+    ]
+
+
 def test_main_creates_and_uses_anonymous_profile_for_unmatched_speaker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

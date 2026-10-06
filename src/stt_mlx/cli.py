@@ -480,13 +480,14 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         names = match_speakers(diarization.centroids, profiles)
         for speaker, centroid in diarization.centroids.items():
-            if speaker in names:
-                continue
             try:
+                if speaker in names:
+                    enroll_profile(profiles_path, names[speaker], centroid)
+                    continue
                 profile = create_anonymous_profile(profiles_path, centroid)
             except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
                 print(
-                    f"error: could not create speaker profile: {error}",
+                    f"error: could not update speaker profiles: {error}",
                     file=sys.stderr,
                 )
                 return 2
