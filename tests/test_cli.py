@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from stt_mlx import cli
@@ -21,11 +22,48 @@ def test_fmt_srt_carries_rounded_milliseconds(seconds: float, expected: str) -> 
     assert fmt_srt(seconds) == expected
 
 
+class FakeDiarizer:
+    """Mimics senko: diarize() clusters window embeddings, then reports segments."""
+
+    def __init__(
+        self,
+        result: dict[str, object] | None,
+        windows: list[tuple[float, float]],
+        embeddings: np.ndarray,
+    ) -> None:
+        self.result = result
+        self.windows = windows
+        self.embeddings = embeddings
+
+    def _perform_clustering(
+        self, embeddings: np.ndarray, subsegments: list[tuple[float, float]]
+    ) -> tuple[list[object], list[object], dict[str, object]]:
+        return [], [], {}
+
+    def diarize(self, *args: object, **kwargs: object) -> dict[str, object] | None:
+        self._perform_clustering(self.embeddings, self.windows)
+        return self.result
+
+
+def senko_result(
+    merged_segments: list[object], raw_segments: list[object]
+) -> dict[str, object]:
+    return {
+        "raw_segments": raw_segments,
+        "raw_speakers_detected": 1,
+        "merged_speakers_detected": 1,
+        "merged_segments": merged_segments,
+        "speaker_centroids": {},
+        "timing_stats": {},
+        "vad": [],
+    }
+
+
 def test_diarize_treats_none_as_no_turns(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_senko = SimpleNamespace(
-        Diarizer=lambda **kwargs: SimpleNamespace(diarize=lambda *args, **kwargs: None)
+    diarizer = FakeDiarizer(None, [], np.empty((0, 2)))
+    monkeypatch.setitem(
+        sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
     )
-    monkeypatch.setitem(sys.modules, "senko", fake_senko)
 
     assert cli.diarize(Path("silent.wav"), None) == cli.DiarizationResult([], {})
 
@@ -75,45 +113,63 @@ def test_transcribe_normalizes_whisper_segments(
 def test_diarize_normalizes_mapping_segments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    result = {
-        "raw_segments": [],
-        "raw_speakers_detected": 1,
-        "merged_speakers_detected": 1,
-        "merged_segments": [{"start": 0, "end": 2.5, "speaker": "SPEAKER_01"}],
-        "speaker_centroids": {},
-        "timing_stats": {},
-        "vad": [(0, 2.5)],
-    }
-    fake_senko = SimpleNamespace(
-        Diarizer=lambda **kwargs: SimpleNamespace(
-            diarize=lambda *args, **kwargs: result
-        )
+    segment = {"start": 0, "end": 2.5, "speaker": "SPEAKER_01"}
+    diarizer = FakeDiarizer(
+        senko_result([segment], [segment]), [(0.0, 1.5)], np.array([[3.0, 4.0]])
     )
-    monkeypatch.setitem(sys.modules, "senko", fake_senko)
+    monkeypatch.setitem(
+        sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
+    )
 
     assert cli.diarize(Path("audio.wav"), None) == cli.DiarizationResult(
-        [cli.SpeakerTurn(0.0, 2.5, "SPEAKER_01")], {}
+        [cli.SpeakerTurn(0.0, 2.5, "SPEAKER_01")], {"SPEAKER_01": [0.6, 0.8]}
     )
+
+
+def test_diarize_builds_voiceprints_from_window_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = [
+        {"start": 0.0, "end": 3.0, "speaker": "SPEAKER_01"},
+        {"start": 3.0, "end": 6.0, "speaker": "SPEAKER_02"},
+    ]
+    windows = [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 4.0), (4.0, 5.0), (5.0, 6.0)]
+    embeddings = np.array(
+        [[2.0, 0.0], [2.0, 0.0], [0.0, 1.0], [0.0, 1.0], [0.0, 3.0], [0.0, 1.0]]
+    )
+    diarizer = FakeDiarizer(senko_result(raw, raw), windows, embeddings)
+    monkeypatch.setitem(
+        sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
+    )
+
+    centroids = cli.diarize(Path("audio.wav"), None).centroids
+
+    assert centroids["SPEAKER_01"] == pytest.approx([1.0, 0.0])
+    assert centroids["SPEAKER_02"] == pytest.approx([0.0, 1.0])
+
+
+def test_diarize_requires_window_embeddings(monkeypatch: pytest.MonkeyPatch) -> None:
+    segment = {"start": 0, "end": 2.5, "speaker": "SPEAKER_01"}
+    diarizer = FakeDiarizer(senko_result([segment], [segment]), [], np.empty((0, 2)))
+    diarizer.diarize = lambda *args, **kwargs: diarizer.result
+    monkeypatch.setitem(
+        sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
+    )
+
+    with pytest.raises(RuntimeError, match="window embeddings"):
+        cli.diarize(Path("audio.wav"), None)
 
 
 def test_diarize_rejects_non_mapping_segments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    result = {
-        "raw_segments": [],
-        "raw_speakers_detected": 1,
-        "merged_speakers_detected": 1,
-        "merged_segments": [SimpleNamespace(start=0, end=2.5, speaker="SPEAKER_01")],
-        "speaker_centroids": {},
-        "timing_stats": {},
-        "vad": [(0, 2.5)],
-    }
-    fake_senko = SimpleNamespace(
-        Diarizer=lambda **kwargs: SimpleNamespace(
-            diarize=lambda *args, **kwargs: result
-        )
+    segment = SimpleNamespace(start=0, end=2.5, speaker="SPEAKER_01")
+    diarizer = FakeDiarizer(
+        senko_result([segment], [segment]), [(0.0, 1.5)], np.array([[1.0, 0.0]])
     )
-    monkeypatch.setitem(sys.modules, "senko", fake_senko)
+    monkeypatch.setitem(
+        sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
+    )
 
     with pytest.raises(TypeError, match="must be mappings"):
         cli.diarize(Path("audio.wav"), None)
@@ -126,6 +182,7 @@ def test_diarize_configures_exact_speaker_count(
     diarizer = SimpleNamespace(
         spectral_cluster=spectral,
         umap_hdbscan_cluster=SimpleNamespace(),
+        _perform_clustering=lambda embeddings, subsegments: ([], [], {}),
         diarize=lambda *args, **kwargs: None,
     )
     monkeypatch.setitem(

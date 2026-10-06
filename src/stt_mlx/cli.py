@@ -117,8 +117,28 @@ def resolve_model(engine: str, model: str | None) -> str:
     return PARAKEET_DEFAULT_MODEL if engine == "parakeet" else DEFAULT_MODEL
 
 
+def _speaker_turns(segments: object, name: str) -> list[SpeakerTurn]:
+    if not isinstance(segments, list):
+        raise TypeError(f"senko {name} segments must be a list")
+    turns: list[SpeakerTurn] = []
+    for segment in segments:
+        if not isinstance(segment, Mapping):
+            raise TypeError(f"senko {name} segments must be mappings")
+        turns.append(
+            SpeakerTurn(
+                start=float(segment["start"]),
+                end=float(segment["end"]),
+                speaker=str(segment["speaker"]),
+            )
+        )
+    return turns
+
+
 def diarize(wav: Path, num_speakers: int | None) -> DiarizationResult:
+    import numpy as np
     import senko
+
+    from stt_mlx.voiceprints import voiceprints, window_labels
 
     diarizer = senko.Diarizer(device="auto", warmup=True, quiet=False)
     if num_speakers is not None:
@@ -127,27 +147,30 @@ def diarize(wav: Path, num_speakers: int | None) -> DiarizationResult:
         diarizer.spectral_cluster.cluster.k = num_speakers
         diarizer.spectral_cluster.min_cluster_size = 0
         diarizer.umap_hdbscan_cluster = diarizer.spectral_cluster
+
+    # Senko reports only a plain mean embedding per speaker. Capture the
+    # per-window embeddings it clusters so voiceprints can skip noisy windows.
+    windows: list[tuple[object, object]] = []
+    cluster = diarizer._perform_clustering
+
+    def capture_windows(embeddings: object, subsegments: object) -> object:
+        windows.append((embeddings, subsegments))
+        return cluster(embeddings, subsegments)
+
+    diarizer._perform_clustering = capture_windows
     result = diarizer.diarize(str(wav), generate_colors=False)
     if result is None:
         return DiarizationResult([], {})
-    turns: list[SpeakerTurn] = []
-    for segment in result["merged_segments"]:
-        if not isinstance(segment, Mapping):
-            raise TypeError("senko merged segments must be mappings")
-        turns.append(
-            SpeakerTurn(
-                start=float(segment["start"]),
-                end=float(segment["end"]),
-                speaker=str(segment["speaker"]),
-            )
-        )
-    raw_centroids = result["speaker_centroids"]
-    if not isinstance(raw_centroids, Mapping):
-        raise TypeError("senko speaker centroids must be a mapping")
-    centroids = {
-        str(speaker): [float(value) for value in centroid]
-        for speaker, centroid in raw_centroids.items()
-    }
+    turns = _speaker_turns(result["merged_segments"], "merged")
+    raw_turns = _speaker_turns(result["raw_segments"], "raw")
+    if not windows:
+        raise RuntimeError("senko did not report window embeddings")
+    embeddings, subsegments = windows[-1]
+    labels = window_labels(
+        [(float(start), float(end)) for start, end in subsegments],
+        [(turn.start, turn.end, turn.speaker) for turn in raw_turns],
+    )
+    centroids = voiceprints(np.asarray(embeddings, dtype=np.float64), labels)
     return DiarizationResult(turns, centroids)
 
 
