@@ -1185,6 +1185,7 @@ source = { editable = "." }
 dependencies = [
     { name = "librosa" },
     { name = "mlx-whisper" },
+    { name = "numpy" },
     { name = "senko" },
     { name = "soundfile" },
     { name = "torch" },
@@ -1200,6 +1201,7 @@ dev = [
 requires-dist = [
     { name = "librosa", specifier = ">=1.0.0" },
     { name = "mlx-whisper", specifier = ">=0.4" },
+    { name = "numpy", specifier = ">=2.4.6" },
     { name = "senko", git = "https://github.com/narcotic-sh/senko.git" },
     { name = "soundfile", specifier = ">=0.14.0" },
     { name = "torch", specifier = ">=2.8.0" },
