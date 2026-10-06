@@ -121,6 +121,15 @@ def test_match_speakers_gives_contested_profile_to_closest_speaker() -> None:
     assert matches == {"SPEAKER_02": "Person A"}
 
 
+def test_match_speakers_default_threshold_rejects_unfamiliar_voice() -> None:
+    profile = SpeakerProfile("id", "Yoav", [[1.0, 0.0]])
+
+    assert match_speakers({"SPEAKER_01": [0.72, 0.694]}, [profile]) == {}
+    assert match_speakers({"SPEAKER_01": [0.78, 0.626]}, [profile]) == {
+        "SPEAKER_01": "Yoav"
+    }
+
+
 def test_match_speakers_rejects_weak_match() -> None:
     matches = match_speakers(
         {"SPEAKER_01": [1.0, 0.0]},
