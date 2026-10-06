@@ -73,18 +73,23 @@ Future diarized transcripts identify matching speaker tags automatically:
 
 Voice profiles are stored locally in
 `~/.local/share/stt-mlx/speaker-profiles.json` (or under `$XDG_DATA_HOME` when
-set). During every diarized run, an unmatched voice automatically creates a
-persistent anonymous profile with a tag such as `speaker-a1b2c3d4`. Matching
-voices reuse that tag in later recordings. Use `stt profiles rename` once you
-know who it belongs to.
+set). During every diarized run, an unmatched voice with at least three minutes
+of speech automatically creates a persistent anonymous profile with a tag such
+as `speaker-a1b2c3d4`. Matching voices reuse that tag in later recordings. Use
+`stt profiles rename` once you know who it belongs to.
 
 Each profile has a stable unique ID, a unique speaker tag, and one or more voice
 samples. Explicitly enrolling the same tag again adds another sample to the
-existing profile. Matching compares a detected speaker with every sample and
-uses the strongest result, which supports enrollment across different recording
-conditions without averaging distinct samples together. Weak or ambiguous
-matches remain anonymous. Voice matching is intended for transcript labeling,
-not identity authentication.
+existing profile, and every matched speaker with at least three minutes of
+speech adds that recording's voice sample automatically. Matching compares a
+detected speaker with every sample and uses the strongest result, which supports
+recognition across different recording conditions without averaging distinct
+samples together. Each profile names at most one speaker per recording, and the
+closest voice wins. Weak matches are not identified. Speakers with less than
+three minutes of speech, which are usually crosstalk or fragments of another
+voice, never change the stored profiles and keep their diarization label when
+unmatched. Voice matching is intended for transcript labeling, not identity
+authentication.
 
 List the enrolled profiles and their sample counts:
 
