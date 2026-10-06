@@ -28,6 +28,7 @@ DEFAULT_MODEL = "mlx-community/ivrit-ai-whisper-large-v3-mlx"
 PARAKEET_DEFAULT_MODEL = "thewh1teagle/parakeet-tdt-0.6b-v3-he"
 DEFAULT_LANGUAGE = "he"
 ENGINES = ("whisper", "parakeet")
+MIN_PROFILE_SPEECH_SECONDS = 180.0
 OutputFormat = Literal["txt", "srt", "json"]
 FORMAT_NAMES: dict[str, OutputFormat] = {
     "txt": "txt",
@@ -502,7 +503,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: could not load speaker profiles: {error}", file=sys.stderr)
             return 2
         names = match_speakers(diarization.centroids, profiles)
+        speech: dict[str, float] = {}
+        for turn in turns:
+            speech[turn.speaker] = speech.get(turn.speaker, 0.0) + (
+                turn.end - turn.start
+            )
         for speaker, centroid in diarization.centroids.items():
+            # Short clusters are usually crosstalk or a split-off fragment of
+            # another speaker; their voiceprints would pollute the profiles.
+            if speech.get(speaker, 0.0) < MIN_PROFILE_SPEECH_SECONDS:
+                continue
             try:
                 if speaker in names:
                     enroll_profile(profiles_path, names[speaker], centroid)

@@ -471,7 +471,7 @@ def test_main_adds_matched_speaker_centroid_to_profile(
         cli,
         "diarize",
         lambda wav, num_speakers: cli.DiarizationResult(
-            [cli.SpeakerTurn(0.0, 1.0, "SPEAKER_01")],
+            [cli.SpeakerTurn(0.0, 200.0, "SPEAKER_01")],
             {"SPEAKER_01": [0.99, 0.01]},
         ),
     )
@@ -501,7 +501,7 @@ def test_main_creates_and_uses_anonymous_profile_for_unmatched_speaker(
         cli,
         "diarize",
         lambda wav, num_speakers: cli.DiarizationResult(
-            [cli.SpeakerTurn(0.0, 1.0, "SPEAKER_01")],
+            [cli.SpeakerTurn(0.0, 200.0, "SPEAKER_01")],
             {"SPEAKER_01": [1.0, 0.0]},
         ),
     )
@@ -518,6 +518,71 @@ def test_main_creates_and_uses_anonymous_profile_for_unmatched_speaker(
     stored_profiles = json.loads(profiles.read_text())["profiles"]
     assert len(stored_profiles) == 1
     assert stored_profiles[0]["id"] == profile["id"]
+
+
+def test_main_keeps_short_unmatched_speaker_out_of_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "meeting.wav"
+    audio.touch()
+    profiles = tmp_path / "profiles.json"
+    monkeypatch.setattr(cli, "default_profiles_path", lambda: profiles)
+    monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
+    monkeypatch.setattr(
+        cli,
+        "transcribe",
+        lambda *args: [cli.TranscriptSegment(0.0, 1.0, "hello")],
+    )
+    monkeypatch.setattr(
+        cli,
+        "diarize",
+        lambda wav, num_speakers: cli.DiarizationResult(
+            [
+                cli.SpeakerTurn(0.0, 100.0, "SPEAKER_01"),
+                cli.SpeakerTurn(150.0, 200.0, "SPEAKER_01"),
+            ],
+            {"SPEAKER_01": [1.0, 0.0]},
+        ),
+    )
+
+    assert cli.main([str(audio), "--engine", "whisper", "--formats", "json"]) == 0
+
+    assert not profiles.exists()
+    output = json.loads((tmp_path / "meeting.diarized.json").read_text())
+    assert output["segments"][0]["speaker"] == "SPEAKER_01"
+
+
+def test_main_names_short_matched_speaker_without_updating_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "meeting.wav"
+    audio.touch()
+    profiles = tmp_path / "profiles.json"
+    stored = {
+        "profiles": [{"id": "yoav-id", "tag": "Yoav", "embeddings": [[1.0, 0.0]]}]
+    }
+    profiles.write_text(json.dumps(stored))
+    monkeypatch.setattr(cli, "default_profiles_path", lambda: profiles)
+    monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
+    monkeypatch.setattr(
+        cli,
+        "transcribe",
+        lambda *args: [cli.TranscriptSegment(0.0, 1.0, "hello")],
+    )
+    monkeypatch.setattr(
+        cli,
+        "diarize",
+        lambda wav, num_speakers: cli.DiarizationResult(
+            [cli.SpeakerTurn(0.0, 60.0, "SPEAKER_01")],
+            {"SPEAKER_01": [0.99, 0.01]},
+        ),
+    )
+
+    assert cli.main([str(audio), "--engine", "whisper", "--formats", "json"]) == 0
+
+    assert json.loads(profiles.read_text()) == stored
+    output = json.loads((tmp_path / "meeting.diarized.json").read_text())
+    assert output["segments"][0]["speaker"] == "Yoav"
 
 
 def test_profiles_list_prints_ids_tags_and_sample_counts(
