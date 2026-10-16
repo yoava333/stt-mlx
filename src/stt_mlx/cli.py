@@ -520,6 +520,17 @@ def main(argv: list[str] | None = None) -> int:
     if turns and diarization.centroids:
         profiles_path = default_profiles_path()
         names = match_speakers(diarization.centroids, profiles)
+        # A loose match names the speaker only tentatively, and learning from
+        # it could teach the profile another person's voice.
+        uncertain = {
+            speaker
+            for speaker, tag in names.items()
+            if profile_score(
+                diarization.centroids[speaker],
+                next(profile for profile in profiles if profile.tag == tag),
+            )
+            < CONFIDENT_MATCH_THRESHOLD
+        }
         speech: dict[str, float] = {}
         for turn in turns:
             speech[turn.speaker] = speech.get(turn.speaker, 0.0) + (
@@ -532,10 +543,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             try:
                 if speaker in names:
-                    # A loose match names the speaker, but learning from it
-                    # could teach the profile another person's voice.
-                    profile = next(p for p in profiles if p.tag == names[speaker])
-                    if profile_score(centroid, profile) >= CONFIDENT_MATCH_THRESHOLD:
+                    if speaker not in uncertain:
                         enroll_profile(profiles_path, names[speaker], centroid)
                     continue
                 profile = create_anonymous_profile(profiles_path, centroid)
@@ -550,6 +558,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"  Created profile {profile.id} ({profile.tag}) for {speaker}",
                 file=sys.stderr,
             )
+        for speaker in uncertain:
+            names[speaker] = f"{names[speaker]}?"
         turns = rename_speakers(turns, names)
         for speaker, name in sorted(names.items()):
             print(f"  Identified {speaker} as {name}", file=sys.stderr)

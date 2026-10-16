@@ -660,7 +660,7 @@ def test_main_names_short_matched_speaker_without_updating_profile(
     assert output["segments"][0]["speaker"] == "Yoav"
 
 
-def test_main_names_loosely_matched_speaker_without_updating_profile(
+def test_main_marks_loosely_matched_speaker_uncertain_without_learning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     audio = tmp_path / "meeting.wav"
@@ -690,7 +690,8 @@ def test_main_names_loosely_matched_speaker_without_updating_profile(
 
     assert json.loads(profiles.read_text()) == stored
     output = json.loads((tmp_path / "meeting.diarized.json").read_text())
-    assert output["segments"][0]["speaker"] == "Yoav"
+    assert output["segments"][0]["speaker"] == "Yoav?"
+    assert output["diarization"][0]["speaker"] == "Yoav?"
 
 
 def test_profiles_list_prints_ids_tags_and_sample_counts(
