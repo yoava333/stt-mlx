@@ -55,11 +55,11 @@ def voiceprints(
         if (mask & stable).any():
             mask &= stable
         windows = units[mask]
-        similarity = windows @ _unit(windows.mean(axis=0))
+        similarity = windows @ unit(windows.mean(axis=0))
         windows = windows[similarity >= np.quantile(similarity, 1 - keep)]
-        prints[speaker] = _unit(windows.mean(axis=0)).tolist()
+        prints[speaker] = unit(windows.mean(axis=0)).tolist()
     return prints
 
 
-def _unit(vector: np.ndarray) -> np.ndarray:
+def unit(vector: np.ndarray) -> np.ndarray:
     return vector / np.linalg.norm(vector)
