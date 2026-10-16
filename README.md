@@ -81,7 +81,10 @@ as `speaker-a1b2c3d4`. Matching voices reuse that tag in later recordings. Use
 Each profile has a stable unique ID, a unique speaker tag, and one or more voice
 samples. Explicitly enrolling the same tag again adds another sample to the
 existing profile, and every matched speaker with at least three minutes of
-speech adds that recording's voice sample automatically. Matching compares a
+speech adds that recording's voice sample automatically, provided its voice
+matches the profile at 0.85 or higher. Weaker matches still name the speaker
+but do not change the profile, so one mistaken match cannot teach a profile
+another person's voice. Matching compares a
 detected speaker with every sample and uses the strongest result, which supports
 recognition across different recording conditions without averaging distinct
 samples together. Each profile names at most one speaker per recording, and the

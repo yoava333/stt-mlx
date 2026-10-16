@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_MATCH_THRESHOLD = 0.75
-DEFAULT_FRAGMENT_THRESHOLD = 0.85
+CONFIDENT_MATCH_THRESHOLD = 0.85
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +209,7 @@ def match_speakers(
     candidates: list[tuple[float, str, str, str]] = []
     for speaker, centroid in centroids.items():
         for profile in profiles:
-            score = _profile_score(centroid, profile)
+            score = profile_score(centroid, profile)
             if score >= threshold:
                 candidates.append((score, speaker, profile.id, profile.tag))
 
@@ -225,7 +225,7 @@ def match_speakers(
 def fragment_speakers(
     centroids: Mapping[str, Sequence[float]],
     profiles: Sequence[SpeakerProfile],
-    threshold: float = DEFAULT_FRAGMENT_THRESHOLD,
+    threshold: float = CONFIDENT_MATCH_THRESHOLD,
 ) -> set[str]:
     """Return speakers that are split-off parts of another speaker's voice.
 
@@ -239,7 +239,7 @@ def fragment_speakers(
     claims: dict[str, list[tuple[float, str]]] = {}
     for speaker, centroid in centroids.items():
         score, profile_id = max(
-            (_profile_score(centroid, profile), profile.id) for profile in profiles
+            (profile_score(centroid, profile), profile.id) for profile in profiles
         )
         if score >= threshold:
             claims.setdefault(profile_id, []).append((score, speaker))
@@ -250,7 +250,8 @@ def fragment_speakers(
     }
 
 
-def _profile_score(centroid: Sequence[float], profile: SpeakerProfile) -> float:
+def profile_score(centroid: Sequence[float], profile: SpeakerProfile) -> float:
+    """Return the similarity of a voice to the closest of a profile's samples."""
     return max(
         cosine_similarity(centroid, embedding) for embedding in profile.embeddings
     )

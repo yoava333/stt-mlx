@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 from stt_mlx.speaker_profiles import (
+    CONFIDENT_MATCH_THRESHOLD,
     SpeakerProfile,
     combine_profiles,
     create_anonymous_profile,
@@ -22,6 +23,7 @@ from stt_mlx.speaker_profiles import (
     enroll_profile,
     load_profiles,
     match_speakers,
+    profile_score,
     rename_profile,
 )
 
@@ -530,7 +532,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             try:
                 if speaker in names:
-                    enroll_profile(profiles_path, names[speaker], centroid)
+                    # A loose match names the speaker, but learning from it
+                    # could teach the profile another person's voice.
+                    profile = next(p for p in profiles if p.tag == names[speaker])
+                    if profile_score(centroid, profile) >= CONFIDENT_MATCH_THRESHOLD:
+                        enroll_profile(profiles_path, names[speaker], centroid)
                     continue
                 profile = create_anonymous_profile(profiles_path, centroid)
             except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
