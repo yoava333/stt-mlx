@@ -8,12 +8,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from stt_mlx.speaker_profiles import (
+    SpeakerProfile,
     combine_profiles,
     create_anonymous_profile,
     default_profiles_path,
@@ -135,19 +136,30 @@ def _speaker_turns(segments: object, name: str) -> list[SpeakerTurn]:
     return turns
 
 
-def diarize(wav: Path, num_speakers: int | None) -> DiarizationResult:
+def diarize(
+    wav: Path, num_speakers: int | None, profiles: Sequence[SpeakerProfile]
+) -> DiarizationResult:
     import numpy as np
     import senko
 
+    from stt_mlx.clustering import cluster_windows
     from stt_mlx.voiceprints import voiceprints, window_labels
 
     diarizer = senko.Diarizer(device="auto", warmup=True, quiet=False)
+    spectral = diarizer.spectral_cluster
     if num_speakers is not None:
-        # Senko's fixed-count mode is implemented by its spectral cluster.
-        # Select it for both short- and long-recording code paths.
-        diarizer.spectral_cluster.cluster.k = num_speakers
-        diarizer.spectral_cluster.min_cluster_size = 0
-        diarizer.umap_hdbscan_cluster = diarizer.spectral_cluster
+        spectral.cluster.k = num_speakers
+        spectral.min_cluster_size = 0
+        # The requested count is exact, so no cluster is dropped as a fragment.
+        profiles = []
+
+    # Senko density-clusters long recordings, which merges similar voices.
+    # Spectral clustering separates them, so use it for every recording.
+    def clusterer(embeddings: np.ndarray) -> np.ndarray:
+        return cluster_windows(embeddings, spectral, profiles)
+
+    diarizer.spectral_cluster = clusterer
+    diarizer.umap_hdbscan_cluster = clusterer
 
     # Senko reports only a plain mean embedding per speaker. Capture the
     # per-window embeddings it clusters so voiceprints can skip noisy windows.
@@ -443,6 +455,14 @@ def main(argv: list[str] | None = None) -> int:
 
     out_prefix = args.output_prefix if args.output_prefix else audio_in.with_suffix("")
 
+    profiles: list[SpeakerProfile] = []
+    if not args.no_diarize and not args.enroll_speaker:
+        try:
+            profiles = load_profiles(default_profiles_path())
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            print(f"error: could not load speaker profiles: {error}", file=sys.stderr)
+            return 2
+
     with tempfile.TemporaryDirectory() as td:
         wav = Path(td) / "audio_16k.wav"
         print(f"Converting → {wav}", file=sys.stderr, flush=True)
@@ -466,7 +486,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_diarize:
             print("Diarizing with senko...", file=sys.stderr, flush=True)
             speaker_count = 1 if args.enroll_speaker else args.num_speakers
-            diarization = diarize(wav, speaker_count)
+            diarization = diarize(wav, speaker_count, profiles)
             print(
                 f"  {len(diarization.turns)} speaker turns",
                 file=sys.stderr,
@@ -497,11 +517,6 @@ def main(argv: list[str] | None = None) -> int:
     turns = diarization.turns
     if turns and diarization.centroids:
         profiles_path = default_profiles_path()
-        try:
-            profiles = load_profiles(profiles_path)
-        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
-            print(f"error: could not load speaker profiles: {error}", file=sys.stderr)
-            return 2
         names = match_speakers(diarization.centroids, profiles)
         speech: dict[str, float] = {}
         for turn in turns:

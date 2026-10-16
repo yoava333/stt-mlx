@@ -91,6 +91,15 @@ voice, never change the stored profiles and keep their diarization label when
 unmatched. Voice matching is intended for transcript labeling, not identity
 authentication.
 
+Speakers are separated with spectral clustering, which keeps similar voices
+apart in recordings of any length. To bound memory and time on long
+recordings, it clusters an evenly spaced sample of at most 6,000 voice windows
+and assigns every window to the nearest resulting speaker. When the speaker
+count is detected automatically, a cluster whose voice matches an enrolled
+profile at 0.85 or higher, while another cluster matches that profile more
+closely, is treated as a fragment of that speaker and its windows rejoin the
+nearest remaining speakers. Pass `--num-speakers` to keep exactly that many.
+
 List the enrolled profiles and their sample counts:
 
 ```bash

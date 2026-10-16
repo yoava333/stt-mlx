@@ -34,6 +34,9 @@ class FakeDiarizer:
         self.result = result
         self.windows = windows
         self.embeddings = embeddings
+        self.spectral_cluster = SimpleNamespace(
+            cluster=SimpleNamespace(k=None), min_cluster_size=4
+        )
 
     def _perform_clustering(
         self, embeddings: np.ndarray, subsegments: list[tuple[float, float]]
@@ -65,7 +68,7 @@ def test_diarize_treats_none_as_no_turns(monkeypatch: pytest.MonkeyPatch) -> Non
         sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
     )
 
-    assert cli.diarize(Path("silent.wav"), None) == cli.DiarizationResult([], {})
+    assert cli.diarize(Path("silent.wav"), None, []) == cli.DiarizationResult([], {})
 
 
 def test_transcribe_normalizes_whisper_segments(
@@ -121,7 +124,7 @@ def test_diarize_normalizes_mapping_segments(
         sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
     )
 
-    assert cli.diarize(Path("audio.wav"), None) == cli.DiarizationResult(
+    assert cli.diarize(Path("audio.wav"), None, []) == cli.DiarizationResult(
         [cli.SpeakerTurn(0.0, 2.5, "SPEAKER_01")], {"SPEAKER_01": [0.6, 0.8]}
     )
 
@@ -142,7 +145,7 @@ def test_diarize_builds_voiceprints_from_window_embeddings(
         sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
     )
 
-    centroids = cli.diarize(Path("audio.wav"), None).centroids
+    centroids = cli.diarize(Path("audio.wav"), None, []).centroids
 
     assert centroids["SPEAKER_01"] == pytest.approx([1.0, 0.0])
     assert centroids["SPEAKER_02"] == pytest.approx([0.0, 1.0])
@@ -157,7 +160,7 @@ def test_diarize_requires_window_embeddings(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     with pytest.raises(RuntimeError, match="window embeddings"):
-        cli.diarize(Path("audio.wav"), None)
+        cli.diarize(Path("audio.wav"), None, [])
 
 
 def test_diarize_rejects_non_mapping_segments(
@@ -172,30 +175,69 @@ def test_diarize_rejects_non_mapping_segments(
     )
 
     with pytest.raises(TypeError, match="must be mappings"):
-        cli.diarize(Path("audio.wav"), None)
+        cli.diarize(Path("audio.wav"), None, [])
+
+
+class FakeSpectral:
+    """Mimics senko's spectral clusterer with fixed labels: A, A's fragment, B."""
+
+    def __init__(self) -> None:
+        self.cluster = SimpleNamespace(k=None)
+        self.min_cluster_size = 4
+
+    def __call__(self, embeddings: np.ndarray) -> np.ndarray:
+        return np.array([0, 2, 2, 1])
+
+
+def clustering_diarizer(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    diarizer = SimpleNamespace(
+        spectral_cluster=FakeSpectral(),
+        umap_hdbscan_cluster=lambda embeddings: pytest.fail("density clustering"),
+        _perform_clustering=lambda embeddings, subsegments: ([], [], {}),
+        diarize=lambda *args, **kwargs: None,
+    )
+    monkeypatch.setitem(
+        sys.modules, "senko", SimpleNamespace(Diarizer=lambda **kwargs: diarizer)
+    )
+    return diarizer
+
+
+# A, a split-off fragment of A, and B.
+CLUSTERING_EMBEDDINGS = np.array(
+    [[1.0, 0.0, 0.0], [0.9, 0.0, 0.436], [0.95, 0.0, 0.312], [0.0, 1.0, 0.0]]
+)
 
 
 def test_diarize_configures_exact_speaker_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    spectral = SimpleNamespace(cluster=SimpleNamespace(k=None), min_cluster_size=4)
-    diarizer = SimpleNamespace(
-        spectral_cluster=spectral,
-        umap_hdbscan_cluster=SimpleNamespace(),
-        _perform_clustering=lambda embeddings, subsegments: ([], [], {}),
-        diarize=lambda *args, **kwargs: None,
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "senko",
-        SimpleNamespace(Diarizer=lambda **kwargs: diarizer),
-    )
+    diarizer = clustering_diarizer(monkeypatch)
+    spectral = diarizer.spectral_cluster
+    profiles = [cli.SpeakerProfile("a", "Person A", [[1.0, 0.0, 0.0]])]
 
-    cli.diarize(Path("audio.wav"), 3)
+    cli.diarize(Path("audio.wav"), 3, profiles)
 
     assert spectral.cluster.k == 3
     assert spectral.min_cluster_size == 0
-    assert diarizer.umap_hdbscan_cluster is spectral
+    assert diarizer.umap_hdbscan_cluster is diarizer.spectral_cluster
+    labels = diarizer.umap_hdbscan_cluster(CLUSTERING_EMBEDDINGS)
+    assert labels.tolist() == [0, 2, 2, 1]
+
+
+def test_diarize_spectrally_clusters_and_drops_fragments_of_known_voices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diarizer = clustering_diarizer(monkeypatch)
+    spectral = diarizer.spectral_cluster
+    profiles = [cli.SpeakerProfile("a", "Person A", [[1.0, 0.0, 0.0]])]
+
+    cli.diarize(Path("audio.wav"), None, profiles)
+
+    assert spectral.cluster.k is None
+    assert spectral.min_cluster_size == 4
+    assert diarizer.umap_hdbscan_cluster is diarizer.spectral_cluster
+    labels = diarizer.umap_hdbscan_cluster(CLUSTERING_EMBEDDINGS)
+    assert labels.tolist() == [0, 0, 0, 1]
 
 
 def test_assign_speakers_returns_complete_values_without_mutation() -> None:
@@ -251,7 +293,7 @@ def test_main_uses_normalized_records(
     monkeypatch.setattr(
         cli,
         "diarize",
-        lambda wav, num_speakers: cli.DiarizationResult(
+        lambda wav, num_speakers, profiles: cli.DiarizationResult(
             [cli.SpeakerTurn(0.0, 1.0, "SPEAKER_01")], {}
         ),
     )
@@ -375,7 +417,7 @@ def test_diarization_only_writes_rttm(
     monkeypatch.setattr(
         cli,
         "diarize",
-        lambda wav, num_speakers: cli.DiarizationResult(
+        lambda wav, num_speakers, profiles: cli.DiarizationResult(
             [cli.SpeakerTurn(0.0, 1.5, "SPEAKER_01")], {}
         ),
     )
@@ -394,7 +436,7 @@ def test_enroll_speaker_saves_single_centroid_without_transcribing(
     audio = tmp_path / "voice.wav"
     audio.touch()
     profiles = tmp_path / "profiles.json"
-    requested_speaker_counts: list[int | None] = []
+    requested_speaker_counts: list[tuple[int | None, list[cli.SpeakerProfile]]] = []
     monkeypatch.setattr(cli, "default_profiles_path", lambda: profiles)
     monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
     monkeypatch.setattr(
@@ -403,8 +445,12 @@ def test_enroll_speaker_saves_single_centroid_without_transcribing(
         lambda *args: pytest.fail("enrollment should not transcribe"),
     )
 
-    def fake_diarize(wav: Path, num_speakers: int | None) -> cli.DiarizationResult:
-        requested_speaker_counts.append(num_speakers)
+    def fake_diarize(
+        wav: Path,
+        num_speakers: int | None,
+        profiles: list[cli.SpeakerProfile],
+    ) -> cli.DiarizationResult:
+        requested_speaker_counts.append((num_speakers, profiles))
         return cli.DiarizationResult(
             [cli.SpeakerTurn(0.0, 5.0, "SPEAKER_01")],
             {"SPEAKER_01": [1.0, 0.0]},
@@ -413,7 +459,7 @@ def test_enroll_speaker_saves_single_centroid_without_transcribing(
     monkeypatch.setattr(cli, "diarize", fake_diarize)
 
     assert cli.main([str(audio), "--enroll-speaker", "Yoav"]) == 0
-    assert requested_speaker_counts == [1]
+    assert requested_speaker_counts == [(1, [])]
     stored = json.loads(profiles.read_text())
     assert stored["profiles"][0]["tag"] == "Yoav"
     assert stored["profiles"][0]["embeddings"] == [[1.0, 0.0]]
@@ -441,7 +487,7 @@ def test_main_replaces_matching_speaker_tags_with_enrolled_name(
     monkeypatch.setattr(
         cli,
         "diarize",
-        lambda wav, num_speakers: cli.DiarizationResult(
+        lambda wav, num_speakers, profiles: cli.DiarizationResult(
             [cli.SpeakerTurn(0.0, 1.0, "SPEAKER_01")],
             {"SPEAKER_01": [0.99, 0.01]},
         ),
@@ -451,6 +497,35 @@ def test_main_replaces_matching_speaker_tags_with_enrolled_name(
     output = json.loads((tmp_path / "meeting.diarized.json").read_text())
     assert output["segments"][0]["speaker"] == "Yoav"
     assert output["diarization"][0]["speaker"] == "Yoav"
+
+
+def test_main_diarizes_with_stored_profiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "meeting.wav"
+    audio.touch()
+    profiles = tmp_path / "profiles.json"
+    profiles.write_text(
+        json.dumps(
+            {"profiles": [{"id": "yoav-id", "tag": "Yoav", "embeddings": [[1.0, 0.0]]}]}
+        )
+    )
+    received: list[list[cli.SpeakerProfile]] = []
+    monkeypatch.setattr(cli, "default_profiles_path", lambda: profiles)
+    monkeypatch.setattr(cli, "to_16k_mono_wav", lambda src, dst: dst.touch())
+
+    def fake_diarize(
+        wav: Path,
+        num_speakers: int | None,
+        profiles: list[cli.SpeakerProfile],
+    ) -> cli.DiarizationResult:
+        received.append(profiles)
+        return cli.DiarizationResult([], {})
+
+    monkeypatch.setattr(cli, "diarize", fake_diarize)
+
+    assert cli.main([str(audio), "--no-transcribe"]) == 0
+    assert received == [[cli.SpeakerProfile("yoav-id", "Yoav", [[1.0, 0.0]])]]
 
 
 def test_main_adds_matched_speaker_centroid_to_profile(
@@ -470,7 +545,7 @@ def test_main_adds_matched_speaker_centroid_to_profile(
     monkeypatch.setattr(
         cli,
         "diarize",
-        lambda wav, num_speakers: cli.DiarizationResult(
+        lambda wav, num_speakers, profiles: cli.DiarizationResult(
             [cli.SpeakerTurn(0.0, 200.0, "SPEAKER_01")],
             {"SPEAKER_01": [0.99, 0.01]},
         ),
@@ -500,7 +575,7 @@ def test_main_creates_and_uses_anonymous_profile_for_unmatched_speaker(
     monkeypatch.setattr(
         cli,
         "diarize",
-        lambda wav, num_speakers: cli.DiarizationResult(
+        lambda wav, num_speakers, profiles: cli.DiarizationResult(
             [cli.SpeakerTurn(0.0, 200.0, "SPEAKER_01")],
             {"SPEAKER_01": [1.0, 0.0]},
         ),
@@ -536,7 +611,7 @@ def test_main_keeps_short_unmatched_speaker_out_of_profiles(
     monkeypatch.setattr(
         cli,
         "diarize",
-        lambda wav, num_speakers: cli.DiarizationResult(
+        lambda wav, num_speakers, profiles: cli.DiarizationResult(
             [
                 cli.SpeakerTurn(0.0, 100.0, "SPEAKER_01"),
                 cli.SpeakerTurn(150.0, 200.0, "SPEAKER_01"),
@@ -572,7 +647,7 @@ def test_main_names_short_matched_speaker_without_updating_profile(
     monkeypatch.setattr(
         cli,
         "diarize",
-        lambda wav, num_speakers: cli.DiarizationResult(
+        lambda wav, num_speakers, profiles: cli.DiarizationResult(
             [cli.SpeakerTurn(0.0, 60.0, "SPEAKER_01")],
             {"SPEAKER_01": [0.99, 0.01]},
         ),
