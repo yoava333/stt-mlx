@@ -10,6 +10,7 @@ from stt_mlx.speaker_profiles import (
     create_anonymous_profile,
     delete_profile,
     enroll_profile,
+    fragment_speakers,
     load_profiles,
     match_speakers,
     rename_profile,
@@ -138,6 +139,42 @@ def test_match_speakers_rejects_weak_match() -> None:
     )
 
     assert matches == {}
+
+
+def test_fragment_speakers_drops_weaker_claims_on_the_same_profile() -> None:
+    fragments = fragment_speakers(
+        {"A": [1.0, 0.0], "A_part": [0.95, 0.312], "B": [0.0, 1.0]},
+        [
+            SpeakerProfile("a", "Person A", [[0.0, -1.0], [1.0, 0.0]]),
+            SpeakerProfile("b", "Person B", [[0.0, 1.0]]),
+        ],
+        threshold=0.9,
+    )
+
+    assert fragments == {"A_part"}
+
+
+def test_fragment_speakers_keeps_voice_that_only_resembles_a_profile() -> None:
+    profile = SpeakerProfile("a", "Person A", [[1.0, 0.0]])
+
+    fragments = fragment_speakers(
+        {"A": [1.0, 0.0], "Newcomer": [0.8, 0.6]}, [profile], threshold=0.85
+    )
+
+    assert fragments == set()
+
+
+def test_fragment_speakers_default_threshold_is_stricter_than_matching() -> None:
+    profile = SpeakerProfile("a", "Person A", [[1.0, 0.0]])
+    centroids = {"A": [1.0, 0.0], "Other": [0.8, 0.6]}
+
+    assert match_speakers({"Other": centroids["Other"]}, [profile]) == {
+        "Other": "Person A"
+    }
+    assert fragment_speakers(centroids, [profile]) == set()
+    assert fragment_speakers({**centroids, "Other": [0.9, 0.436]}, [profile]) == {
+        "Other"
+    }
 
 
 def test_load_profiles_rejects_obsolete_store_format(tmp_path: Path) -> None:
